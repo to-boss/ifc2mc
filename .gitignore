@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local OS/editor artifacts
+.DS_Store
+
+# Local sample data
+examples/
