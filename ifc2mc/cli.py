@@ -7,6 +7,31 @@ from .config import ImportConfig, default_block_map, default_type_priority
 from .importer import run_import
 
 
+def _parse_block_map_overrides(entries: list[str]) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for raw_entry in entries:
+        entry = raw_entry.strip()
+        if not entry:
+            raise ValueError("empty --block-map value")
+        if "=" not in entry:
+            raise ValueError(
+                f"invalid --block-map '{raw_entry}', expected IFCType=block_id"
+            )
+        ifc_type, _, raw_block_name = entry.partition("=")
+        ifc_type = ifc_type.strip()
+        block_name = raw_block_name.strip()
+        if not ifc_type:
+            raise ValueError(
+                f"invalid --block-map '{raw_entry}', missing IFC type name"
+            )
+        if not block_name:
+            raise ValueError(
+                f"invalid --block-map '{raw_entry}', missing block id"
+            )
+        overrides[ifc_type] = block_name
+    return overrides
+
+
 def _parse_type_priority_overrides(entries: list[str]) -> dict[str, int]:
     overrides: dict[str, int] = {}
     for raw_entry in entries:
@@ -155,6 +180,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="IFC type to exclude. Repeatable.",
     )
     import_parser.add_argument(
+        "--block-map",
+        action="append",
+        default=[],
+        help="Override block mapping as IFCType=block_id. Repeatable.",
+    )
+    import_parser.add_argument(
+        "--clear-default-block-map",
+        action="store_true",
+        help="Start with empty IFC block map before applying overrides.",
+    )
+    import_parser.add_argument(
         "--type-priority",
         action="append",
         default=[],
@@ -180,9 +216,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "import":
         try:
+            block_map_overrides = _parse_block_map_overrides(args.block_map)
             type_priority_overrides = _parse_type_priority_overrides(args.type_priority)
         except ValueError as exc:
             parser.error(str(exc))
+        block_map = {} if args.clear_default_block_map else default_block_map()
+        block_map.update(block_map_overrides)
         type_priority = (
             {} if args.clear_default_type_priority else default_type_priority()
         )
@@ -208,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
             game_version=args.game_version,
             include_types=tuple(args.include_type),
             exclude_types=tuple(args.exclude_type),
-            block_map=default_block_map(),
+            block_map=block_map,
             type_priority=type_priority,
         )
         return run_import(config, dry_run=args.dry_run)
