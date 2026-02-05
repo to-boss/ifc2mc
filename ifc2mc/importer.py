@@ -530,10 +530,24 @@ def _resolve_overlap_ifc_type(
     return existing_ifc_type
 
 
+def _chunk_coords_for_block(x: int, z: int) -> tuple[int, int]:
+    return (math.floor(x / 16), math.floor(z / 16))
+
+
+def _count_touched_chunks(block_types_by_coord: dict[tuple[int, int, int], str]) -> int:
+    if not block_types_by_coord:
+        return 0
+    chunk_coords = {
+        _chunk_coords_for_block(int(x), int(z))
+        for x, _, z in block_types_by_coord.keys()
+    }
+    return len(chunk_coords)
+
+
 def _write_blocks_to_world(
     config: ImportConfig,
     block_types_by_coord: dict[tuple[int, int, int], str],
-) -> tuple[int, Counter[str]]:
+) -> tuple[int, Counter[str], int]:
     import amulet
     from amulet.api.block import Block
 
@@ -541,9 +555,22 @@ def _write_blocks_to_world(
     game_version = (config.game_platform, config.game_version)
     placed_by_block_name: Counter[str] = Counter()
     block_cache: dict[str, Block] = {}
+    touched_chunks: set[tuple[int, int]] = set()
+
+    def _write_sort_key(
+        item: tuple[tuple[int, int, int], str],
+    ) -> tuple[int, int, int, int, int]:
+        (x, y, z), _ = item
+        chunk_x, chunk_z = _chunk_coords_for_block(int(x), int(z))
+        return (chunk_x, chunk_z, int(y), int(x), int(z))
+
+    sorted_items = sorted(
+        block_types_by_coord.items(),
+        key=_write_sort_key,
+    )
 
     try:
-        for (x, y, z), ifc_type in block_types_by_coord.items():
+        for (x, y, z), ifc_type in sorted_items:
             block_name = _resolve_block_name(ifc_type, config)
             block = block_cache.get(block_name)
             if block is None:
@@ -551,6 +578,7 @@ def _write_blocks_to_world(
                 block = Block(namespace, base_name)
                 block_cache[block_name] = block
 
+            touched_chunks.add(_chunk_coords_for_block(int(x), int(z)))
             level.set_version_block(
                 int(x),
                 int(y),
@@ -565,7 +593,7 @@ def _write_blocks_to_world(
     finally:
         level.close()
 
-    return (sum(placed_by_block_name.values()), placed_by_block_name)
+    return (sum(placed_by_block_name.values()), placed_by_block_name, len(touched_chunks))
 
 
 def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
@@ -760,11 +788,12 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     if not voxel_result.block_types_by_coord:
         print("write_summary:")
         print("  placed_blocks: 0")
+        print("  touched_chunks: 0")
         print("  placed_block_types: <none>")
         return 0
 
     try:
-        placed_count, placed_by_block_name = _write_blocks_to_world(
+        placed_count, placed_by_block_name, touched_chunks = _write_blocks_to_world(
             config, voxel_result.block_types_by_coord
         )
     except Exception as exc:
@@ -773,6 +802,7 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
 
     print("write_summary:")
     print(f"  placed_blocks: {placed_count}")
+    print(f"  touched_chunks: {touched_chunks}")
     print("  placed_block_types:")
     for block_name, count in placed_by_block_name.most_common():
         print(f"    {block_name}: {count}")

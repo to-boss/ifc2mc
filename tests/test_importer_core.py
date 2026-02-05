@@ -6,6 +6,7 @@ import numpy as np
 
 from ifc2mc.config import ImportConfig
 from ifc2mc.importer import (
+    _count_touched_chunks,
     _compute_placement_transform,
     _ifc_points_to_mc,
     _parse_block_name,
@@ -128,6 +129,17 @@ def test_resolve_overlap_ifc_type_uses_priority_and_stable_ties() -> None:
 
     tie_cfg = _base_config(type_priority={})
     assert _resolve_overlap_ifc_type("IfcWall", "IfcColumn", tie_cfg) == "IfcWall"
+
+
+def test_count_touched_chunks_handles_negative_coordinates() -> None:
+    blocks = {
+        (0, 64, 0): "IfcWall",
+        (15, 64, 15): "IfcWall",
+        (16, 64, 0): "IfcWall",
+        (-1, 64, -1): "IfcWall",
+        (-17, 64, -1): "IfcWall",
+    }
+    assert _count_touched_chunks(blocks) == 4
 
 
 def test_run_import_validates_numeric_inputs_early() -> None:
