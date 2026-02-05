@@ -7,6 +7,37 @@ from .config import ImportConfig, default_block_map, default_type_priority
 from .importer import run_import
 
 
+def _parse_type_priority_overrides(entries: list[str]) -> dict[str, int]:
+    overrides: dict[str, int] = {}
+    for raw_entry in entries:
+        entry = raw_entry.strip()
+        if not entry:
+            raise ValueError("empty --type-priority value")
+        if "=" not in entry:
+            raise ValueError(
+                f"invalid --type-priority '{raw_entry}', expected IFCType=priority"
+            )
+        ifc_type, _, raw_priority = entry.partition("=")
+        ifc_type = ifc_type.strip()
+        raw_priority = raw_priority.strip()
+        if not ifc_type:
+            raise ValueError(
+                f"invalid --type-priority '{raw_entry}', missing IFC type name"
+            )
+        if not raw_priority:
+            raise ValueError(
+                f"invalid --type-priority '{raw_entry}', missing priority value"
+            )
+        try:
+            priority = int(raw_priority)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid --type-priority '{raw_entry}', priority must be an integer"
+            ) from exc
+        overrides[ifc_type] = priority
+    return overrides
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ifc2mc", description="Import IFC models into Minecraft worlds."
@@ -124,6 +155,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="IFC type to exclude. Repeatable.",
     )
     import_parser.add_argument(
+        "--type-priority",
+        action="append",
+        default=[],
+        help="Override overlap priority as IFCType=priority. Repeatable.",
+    )
+    import_parser.add_argument(
+        "--clear-default-type-priority",
+        action="store_true",
+        help="Start with empty overlap priority mapping before applying overrides.",
+    )
+    import_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run validation and planning without writing blocks.",
@@ -137,6 +179,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "import":
+        try:
+            type_priority_overrides = _parse_type_priority_overrides(args.type_priority)
+        except ValueError as exc:
+            parser.error(str(exc))
+        type_priority = (
+            {} if args.clear_default_type_priority else default_type_priority()
+        )
+        type_priority.update(type_priority_overrides)
+
         config = ImportConfig(
             ifc_path=args.ifc,
             world_path=args.world,
@@ -158,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
             include_types=tuple(args.include_type),
             exclude_types=tuple(args.exclude_type),
             block_map=default_block_map(),
-            type_priority=default_type_priority(),
+            type_priority=type_priority,
         )
         return run_import(config, dry_run=args.dry_run)
 
