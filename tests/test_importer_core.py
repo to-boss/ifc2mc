@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from ifc2mc.config import ImportConfig
 from ifc2mc.importer import (
+    GeometryScan,
+    VoxelizationResult,
+    VoxelizationSummary,
     _count_touched_chunks,
     _compute_placement_transform,
     _fmt_ms,
@@ -26,6 +31,18 @@ def _base_config(**kwargs: object) -> ImportConfig:
     }
     params.update(kwargs)
     return ImportConfig(**params)
+
+
+class _DummyIfcFile:
+    schema = "IFC4X3_ADD2"
+
+
+class _DummyEntity:
+    def __init__(self, type_name: str) -> None:
+        self._type_name = type_name
+
+    def is_a(self) -> str:
+        return self._type_name
 
 
 def test_ifc_points_to_mc_axis_mapping_without_rotation() -> None:
@@ -150,7 +167,7 @@ def test_fmt_ms_rounds_to_single_decimal_place() -> None:
 
 
 def test_print_timing_summary_prints_optional_fields_only_when_provided(
-    capsys: object,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _print_timing_summary(
         open_validate_ms=1.1,
@@ -177,6 +194,122 @@ def test_print_timing_summary_prints_optional_fields_only_when_provided(
     output_with_optional = capsys.readouterr().out
     assert "voxelize: 6.6" in output_with_optional
     assert "write_world: 7.7" in output_with_optional
+
+
+def test_run_import_dry_run_prints_timing_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ifc_file_path = tmp_path / "model.ifc"
+    ifc_file_path.write_text("dummy")
+
+    monkeypatch.setattr("ifc2mc.importer.ifcopenshell.open", lambda _p: _DummyIfcFile())
+    monkeypatch.setattr(
+        "ifc2mc.importer._validate_ifc_types",
+        lambda _ifc, _types, *, label: None,
+    )
+    monkeypatch.setattr(
+        "ifc2mc.importer._collect_candidate_elements",
+        lambda _ifc, _include, _exclude: [_DummyEntity("IfcWall"), _DummyEntity("IfcWall")],
+    )
+    monkeypatch.setattr(
+        "ifc2mc.importer._scan_geometry",
+        lambda _ifc, _entities: GeometryScan(
+            shape_count=2,
+            empty_shape_count=0,
+            bbox_min_proj=(0.0, 0.0, 0.0),
+            bbox_max_proj=(1.0, 1.0, 1.0),
+        ),
+    )
+    monkeypatch.setattr(
+        "ifc2mc.importer.ifcopenshell.util.unit.calculate_unit_scale",
+        lambda _ifc: 1.0,
+    )
+
+    rc = run_import(
+        _base_config(ifc_path=ifc_file_path, world_path=tmp_path / "world"),
+        dry_run=True,
+    )
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "timing_summary_ms:" in output
+    assert "open_validate:" in output
+    assert "scan_geometry:" in output
+    assert "\n  voxelize:" not in output
+    assert "\n  write_world:" not in output
+    assert "dry_run: True" in output
+
+
+def test_run_import_write_mode_prints_voxelize_and_write_timing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ifc_file_path = tmp_path / "model.ifc"
+    ifc_file_path.write_text("dummy")
+    world_path = tmp_path / "world"
+    world_path.mkdir()
+
+    monkeypatch.setattr("ifc2mc.importer.ifcopenshell.open", lambda _p: _DummyIfcFile())
+    monkeypatch.setattr(
+        "ifc2mc.importer._validate_ifc_types",
+        lambda _ifc, _types, *, label: None,
+    )
+    monkeypatch.setattr(
+        "ifc2mc.importer._collect_candidate_elements",
+        lambda _ifc, _include, _exclude: [_DummyEntity("IfcWall")],
+    )
+    monkeypatch.setattr(
+        "ifc2mc.importer._scan_geometry",
+        lambda _ifc, _entities: GeometryScan(
+            shape_count=1,
+            empty_shape_count=0,
+            bbox_min_proj=(0.0, 0.0, 0.0),
+            bbox_max_proj=(1.0, 1.0, 1.0),
+        ),
+    )
+    monkeypatch.setattr(
+        "ifc2mc.importer.ifcopenshell.util.unit.calculate_unit_scale",
+        lambda _ifc: 1.0,
+    )
+    monkeypatch.setattr(
+        "ifc2mc.importer._voxelize_geometry",
+        lambda _ifc, _entities, *, config, transform: VoxelizationResult(
+            summary=VoxelizationSummary(
+                shapes_with_faces=1,
+                shapes_voxelized=1,
+                shapes_failed=0,
+                raw_voxel_points=1,
+                unique_block_count=1,
+                block_bbox_min_int=(0, 0, 0),
+                block_bbox_max_int=(0, 0, 0),
+                chunk_min_x=0,
+                chunk_max_x=0,
+                chunk_min_z=0,
+                chunk_max_z=0,
+                type_counts=Counter({"IfcWall": 1}),
+            ),
+            block_types_by_coord={(0, 0, 0): "IfcWall"},
+        ),
+    )
+    monkeypatch.setattr(
+        "ifc2mc.importer._write_blocks_to_world",
+        lambda _cfg, _blocks: (1, Counter({"minecraft:stone": 1}), 1),
+    )
+
+    rc = run_import(
+        _base_config(ifc_path=ifc_file_path, world_path=world_path, voxelize=True),
+        dry_run=False,
+    )
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "timing_summary_ms:" in output
+    assert "\n  voxelize:" in output
+    assert "\n  write_world:" in output
+    assert "write_summary:" in output
 
 
 def test_run_import_validates_numeric_inputs_early() -> None:
