@@ -63,12 +63,74 @@ class VoxelizationSummary:
     type_counts: Counter[str]
 
 
+@dataclass(slots=True)
+class VoxelizationResult:
+    summary: VoxelizationSummary
+    block_types_by_coord: dict[tuple[int, int, int], str]
+
+
 def _fmt_vec3(values: tuple[float, float, float], ndigits: int = 3) -> str:
     return f"({values[0]:.{ndigits}f}, {values[1]:.{ndigits}f}, {values[2]:.{ndigits}f})"
 
 
 def _fmt_int3(values: tuple[int, int, int]) -> str:
     return f"({values[0]}, {values[1]}, {values[2]})"
+
+
+def _ifc_points_to_mc(points_ifc_m: np.ndarray, yaw_degrees: float) -> np.ndarray:
+    """
+    Convert IFC world coordinates (Z-up) to Minecraft-oriented coordinates.
+
+    Mapping:
+    - MC X <- IFC X
+    - MC Y <- IFC Z  (up axis)
+    - MC Z <- -IFC Y
+    """
+
+    points_mc = np.empty_like(points_ifc_m)
+    points_mc[:, 0] = points_ifc_m[:, 0]
+    points_mc[:, 1] = points_ifc_m[:, 2]
+    points_mc[:, 2] = -points_ifc_m[:, 1]
+
+    if yaw_degrees != 0.0:
+        yaw_rad = math.radians(yaw_degrees)
+        cos_yaw = math.cos(yaw_rad)
+        sin_yaw = math.sin(yaw_rad)
+        x = points_mc[:, 0].copy()
+        z = points_mc[:, 2].copy()
+        points_mc[:, 0] = x * cos_yaw - z * sin_yaw
+        points_mc[:, 2] = x * sin_yaw + z * cos_yaw
+
+    return points_mc
+
+
+def _transform_bbox_ifc_to_mc(
+    bbox_min_ifc_m: tuple[float, float, float],
+    bbox_max_ifc_m: tuple[float, float, float],
+    yaw_degrees: float,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    min_x, min_y, min_z = bbox_min_ifc_m
+    max_x, max_y, max_z = bbox_max_ifc_m
+    corners = np.asarray(
+        [
+            [min_x, min_y, min_z],
+            [min_x, min_y, max_z],
+            [min_x, max_y, min_z],
+            [min_x, max_y, max_z],
+            [max_x, min_y, min_z],
+            [max_x, min_y, max_z],
+            [max_x, max_y, min_z],
+            [max_x, max_y, max_z],
+        ],
+        dtype=np.float64,
+    )
+    transformed = _ifc_points_to_mc(corners, yaw_degrees)
+    min_v = transformed.min(axis=0)
+    max_v = transformed.max(axis=0)
+    return (
+        (float(min_v[0]), float(min_v[1]), float(min_v[2])),
+        (float(max_v[0]), float(max_v[1]), float(max_v[2])),
+    )
 
 
 def _validate_ifc_types(ifc_file: ifcopenshell.file, type_names: tuple[str, ...], *, label: str) -> None:
@@ -275,7 +337,7 @@ def _voxelize_geometry(
     *,
     config: ImportConfig,
     transform: PlacementTransform,
-) -> VoxelizationSummary:
+) -> VoxelizationResult:
     settings = ifcopenshell.geom.settings()
     settings.set("use-world-coords", True)
     settings.set("convert-back-units", False)
@@ -287,22 +349,25 @@ def _voxelize_geometry(
         include=entities,
     )
     if not iterator.initialize():
-        return VoxelizationSummary(
-            shapes_with_faces=0,
-            shapes_voxelized=0,
-            shapes_failed=0,
-            raw_voxel_points=0,
-            unique_block_count=0,
-            block_bbox_min_int=None,
-            block_bbox_max_int=None,
-            chunk_min_x=None,
-            chunk_max_x=None,
-            chunk_min_z=None,
-            chunk_max_z=None,
-            type_counts=Counter(),
+        return VoxelizationResult(
+            summary=VoxelizationSummary(
+                shapes_with_faces=0,
+                shapes_voxelized=0,
+                shapes_failed=0,
+                raw_voxel_points=0,
+                unique_block_count=0,
+                block_bbox_min_int=None,
+                block_bbox_max_int=None,
+                chunk_min_x=None,
+                chunk_max_x=None,
+                chunk_min_z=None,
+                chunk_max_z=None,
+                type_counts=Counter(),
+            ),
+            block_types_by_coord={},
         )
 
-    occupied_blocks: set[tuple[int, int, int]] = set()
+    occupied_blocks: dict[tuple[int, int, int], str] = {}
     type_counts: Counter[str] = Counter()
 
     shapes_with_faces = 0
@@ -339,37 +404,41 @@ def _voxelize_geometry(
                     break
                 continue
 
-            points = np.asarray(voxel_grid.points, dtype=np.float64)
-            if points.size == 0:
+            points_ifc_m = np.asarray(voxel_grid.points, dtype=np.float64)
+            if points_ifc_m.size == 0:
                 if not iterator.next():
                     break
                 continue
 
-            raw_voxel_points += int(points.shape[0])
+            points_mc_m = _ifc_points_to_mc(points_ifc_m, config.yaw_degrees)
+
+            raw_voxel_points += int(points_mc_m.shape[0])
             shapes_voxelized += 1
+            try:
+                element = ifc_file.by_id(int(shape.id))
+                element_type = str(element.is_a())
+            except Exception:
+                element_type = "<unknown>"
 
             bx = np.floor(
-                (points[:, 0] + transform.shift_x_m) / config.meters_per_block
+                (points_mc_m[:, 0] + transform.shift_x_m) / config.meters_per_block
                 + transform.world_x_offset_blocks
             ).astype(np.int64)
             by = np.floor(
-                (points[:, 1] + transform.shift_y_m) / config.meters_per_block
+                (points_mc_m[:, 1] + transform.shift_y_m) / config.meters_per_block
                 + float(config.y_offset)
             ).astype(np.int64)
             bz = np.floor(
-                (points[:, 2] + transform.shift_z_m) / config.meters_per_block
+                (points_mc_m[:, 2] + transform.shift_z_m) / config.meters_per_block
                 + transform.world_z_offset_blocks
             ).astype(np.int64)
 
             unique_for_shape = np.unique(np.column_stack((bx, by, bz)), axis=0)
             for block_xyz in unique_for_shape:
-                occupied_blocks.add((int(block_xyz[0]), int(block_xyz[1]), int(block_xyz[2])))
+                coord = (int(block_xyz[0]), int(block_xyz[1]), int(block_xyz[2]))
+                occupied_blocks.setdefault(coord, element_type)
 
-            try:
-                element = ifc_file.by_id(int(shape.id))
-                type_counts[element.is_a()] += int(unique_for_shape.shape[0])
-            except Exception:
-                type_counts["<unknown>"] += int(unique_for_shape.shape[0])
+            type_counts[element_type] += int(unique_for_shape.shape[0])
 
         except Exception:
             shapes_failed += 1
@@ -378,47 +447,109 @@ def _voxelize_geometry(
             break
 
     if not occupied_blocks:
-        return VoxelizationSummary(
-            shapes_with_faces=shapes_with_faces,
-            shapes_voxelized=shapes_voxelized,
-            shapes_failed=shapes_failed,
-            raw_voxel_points=raw_voxel_points,
-            unique_block_count=0,
-            block_bbox_min_int=None,
-            block_bbox_max_int=None,
-            chunk_min_x=None,
-            chunk_max_x=None,
-            chunk_min_z=None,
-            chunk_max_z=None,
-            type_counts=type_counts,
+        return VoxelizationResult(
+            summary=VoxelizationSummary(
+                shapes_with_faces=shapes_with_faces,
+                shapes_voxelized=shapes_voxelized,
+                shapes_failed=shapes_failed,
+                raw_voxel_points=raw_voxel_points,
+                unique_block_count=0,
+                block_bbox_min_int=None,
+                block_bbox_max_int=None,
+                chunk_min_x=None,
+                chunk_max_x=None,
+                chunk_min_z=None,
+                chunk_max_z=None,
+                type_counts=type_counts,
+            ),
+            block_types_by_coord={},
         )
 
-    min_x = min(x for x, _, _ in occupied_blocks)
-    min_y = min(y for _, y, _ in occupied_blocks)
-    min_z = min(z for _, _, z in occupied_blocks)
-    max_x = max(x for x, _, _ in occupied_blocks)
-    max_y = max(y for _, y, _ in occupied_blocks)
-    max_z = max(z for _, _, z in occupied_blocks)
+    min_x = min(x for x, _, _ in occupied_blocks.keys())
+    min_y = min(y for _, y, _ in occupied_blocks.keys())
+    min_z = min(z for _, _, z in occupied_blocks.keys())
+    max_x = max(x for x, _, _ in occupied_blocks.keys())
+    max_y = max(y for _, y, _ in occupied_blocks.keys())
+    max_z = max(z for _, _, z in occupied_blocks.keys())
 
     chunk_min_x = math.floor(min_x / 16)
     chunk_max_x = math.floor(max_x / 16)
     chunk_min_z = math.floor(min_z / 16)
     chunk_max_z = math.floor(max_z / 16)
 
-    return VoxelizationSummary(
-        shapes_with_faces=shapes_with_faces,
-        shapes_voxelized=shapes_voxelized,
-        shapes_failed=shapes_failed,
-        raw_voxel_points=raw_voxel_points,
-        unique_block_count=len(occupied_blocks),
-        block_bbox_min_int=(min_x, min_y, min_z),
-        block_bbox_max_int=(max_x, max_y, max_z),
-        chunk_min_x=chunk_min_x,
-        chunk_max_x=chunk_max_x,
-        chunk_min_z=chunk_min_z,
-        chunk_max_z=chunk_max_z,
-        type_counts=type_counts,
+    return VoxelizationResult(
+        summary=VoxelizationSummary(
+            shapes_with_faces=shapes_with_faces,
+            shapes_voxelized=shapes_voxelized,
+            shapes_failed=shapes_failed,
+            raw_voxel_points=raw_voxel_points,
+            unique_block_count=len(occupied_blocks),
+            block_bbox_min_int=(min_x, min_y, min_z),
+            block_bbox_max_int=(max_x, max_y, max_z),
+            chunk_min_x=chunk_min_x,
+            chunk_max_x=chunk_max_x,
+            chunk_min_z=chunk_min_z,
+            chunk_max_z=chunk_max_z,
+            type_counts=type_counts,
+        ),
+        block_types_by_coord=occupied_blocks,
     )
+
+
+def _parse_block_name(block_name: str) -> tuple[str, str]:
+    raw = block_name.strip()
+    if not raw:
+        return ("minecraft", "stone")
+    if ":" in raw:
+        namespace, base_name = raw.split(":", 1)
+        namespace = namespace.strip() or "minecraft"
+        base_name = base_name.strip() or "stone"
+        return (namespace, base_name)
+    return ("minecraft", raw)
+
+
+def _resolve_block_name(ifc_type: str, config: ImportConfig) -> str:
+    if ifc_type in config.block_map:
+        return config.block_map[ifc_type]
+    return "minecraft:stone"
+
+
+def _write_blocks_to_world(
+    config: ImportConfig,
+    block_types_by_coord: dict[tuple[int, int, int], str],
+) -> tuple[int, Counter[str]]:
+    import amulet
+    from amulet.api.block import Block
+
+    level = amulet.load_level(str(config.world_path))
+    game_version = (config.game_platform, config.game_version)
+    placed_by_block_name: Counter[str] = Counter()
+    block_cache: dict[str, Block] = {}
+
+    try:
+        for (x, y, z), ifc_type in block_types_by_coord.items():
+            block_name = _resolve_block_name(ifc_type, config)
+            block = block_cache.get(block_name)
+            if block is None:
+                namespace, base_name = _parse_block_name(block_name)
+                block = Block(namespace, base_name)
+                block_cache[block_name] = block
+
+            level.set_version_block(
+                int(x),
+                int(y),
+                int(z),
+                config.dimension,
+                game_version,
+                block,
+            )
+            placed_by_block_name[block_name] += 1
+
+        level.save()
+    finally:
+        level.close()
+
+    return (sum(placed_by_block_name.values()), placed_by_block_name)
 
 
 def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
@@ -428,9 +559,17 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     if config.voxel_pitch_m <= 0:
         print("error: --voxel-pitch-m must be > 0", file=sys.stderr)
         return 2
+    if config.ground_clearance < 0:
+        print("error: --ground-clearance must be >= 0", file=sys.stderr)
+        return 2
 
     ifc_path = Path(config.ifc_path).expanduser().resolve()
     world_path = Path(config.world_path).expanduser().resolve()
+    config.ifc_path = ifc_path
+    config.world_path = world_path
+    y_offset_input = config.y_offset
+    if config.snap_to_superflat:
+        config.y_offset = config.superflat_ground_y + config.ground_clearance
     if not ifc_path.is_file():
         print(f"error: IFC file not found: {ifc_path}", file=sys.stderr)
         return 2
@@ -471,7 +610,12 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     print(f"voxelize: {config.voxelize}")
     if config.voxelize:
         print(f"voxel_method: {config.voxel_method}")
-    print(f"y_offset: {config.y_offset}")
+    print(f"yaw_degrees: {config.yaw_degrees}")
+    print(f"snap_to_superflat: {config.snap_to_superflat}")
+    print(f"superflat_ground_y: {config.superflat_ground_y}")
+    print(f"ground_clearance: {config.ground_clearance}")
+    print(f"y_offset_input: {y_offset_input}")
+    print(f"y_offset_effective: {config.y_offset}")
     if config.origin_mode == "fixed":
         print(f"fixed_origin_xz: ({config.fixed_origin_x}, {config.fixed_origin_z})")
     print(f"dimension: {config.dimension}")
@@ -490,34 +634,42 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
         if dry_run:
             print("dry_run: True")
             return 0
-        print(
-            "write_mode: not implemented yet (use --dry-run for analysis-only mode)",
-            file=sys.stderr,
-        )
-        return 3
+        print("error: model has no geometric output to write", file=sys.stderr)
+        return 1
 
-    # Geometry output was configured in SI meters.
-    bbox_min_m = geometry.bbox_min_proj
-    bbox_max_m = geometry.bbox_max_proj
-    bbox_size_m = (
-        bbox_max_m[0] - bbox_min_m[0],
-        bbox_max_m[1] - bbox_min_m[1],
-        bbox_max_m[2] - bbox_min_m[2],
+    # Geometry output was configured in SI meters (IFC world axes, Z-up).
+    bbox_min_ifc_m = geometry.bbox_min_proj
+    bbox_max_ifc_m = geometry.bbox_max_proj
+    bbox_size_ifc_m = (
+        bbox_max_ifc_m[0] - bbox_min_ifc_m[0],
+        bbox_max_ifc_m[1] - bbox_min_ifc_m[1],
+        bbox_max_ifc_m[2] - bbox_min_ifc_m[2],
     )
-    bbox_min_project_units = tuple(value / ifc_unit_scale_m for value in bbox_min_m)
-    bbox_max_project_units = tuple(value / ifc_unit_scale_m for value in bbox_max_m)
+    bbox_min_project_units = tuple(value / ifc_unit_scale_m for value in bbox_min_ifc_m)
+    bbox_max_project_units = tuple(value / ifc_unit_scale_m for value in bbox_max_ifc_m)
+    bbox_min_mc_m, bbox_max_mc_m = _transform_bbox_ifc_to_mc(
+        bbox_min_ifc_m, bbox_max_ifc_m, config.yaw_degrees
+    )
+    bbox_size_mc_m = (
+        bbox_max_mc_m[0] - bbox_min_mc_m[0],
+        bbox_max_mc_m[1] - bbox_min_mc_m[1],
+        bbox_max_mc_m[2] - bbox_min_mc_m[2],
+    )
 
-    placement = _plan_block_placement(bbox_min_m, bbox_max_m, config)
-    transform = _compute_placement_transform(bbox_min_m, bbox_max_m, config)
+    placement = _plan_block_placement(bbox_min_mc_m, bbox_max_mc_m, config)
+    transform = _compute_placement_transform(bbox_min_mc_m, bbox_max_mc_m, config)
     chunk_count_x = placement.chunk_max_x - placement.chunk_min_x + 1
     chunk_count_z = placement.chunk_max_z - placement.chunk_min_z + 1
     chunk_count = chunk_count_x * chunk_count_z
 
     print(f"bbox_ifc_project_units_min: {_fmt_vec3(bbox_min_project_units)}")
     print(f"bbox_ifc_project_units_max: {_fmt_vec3(bbox_max_project_units)}")
-    print(f"bbox_geometry_meters_min: {_fmt_vec3(bbox_min_m)}")
-    print(f"bbox_geometry_meters_max: {_fmt_vec3(bbox_max_m)}")
-    print(f"bbox_size_meters: {_fmt_vec3(bbox_size_m)}")
+    print(f"bbox_ifc_meters_min: {_fmt_vec3(bbox_min_ifc_m)}")
+    print(f"bbox_ifc_meters_max: {_fmt_vec3(bbox_max_ifc_m)}")
+    print(f"bbox_ifc_size_meters: {_fmt_vec3(bbox_size_ifc_m)}")
+    print(f"bbox_mc_meters_min: {_fmt_vec3(bbox_min_mc_m)}")
+    print(f"bbox_mc_meters_max: {_fmt_vec3(bbox_max_mc_m)}")
+    print(f"bbox_mc_size_meters: {_fmt_vec3(bbox_size_mc_m)}")
     print(f"planned_block_bbox_min: {_fmt_vec3(placement.bbox_min_blocks)}")
     print(f"planned_block_bbox_max: {_fmt_vec3(placement.bbox_max_blocks)}")
     print(f"planned_block_bbox_min_int: {_fmt_int3(placement.bbox_min_blocks_int)}")
@@ -534,14 +686,19 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     for type_name, count in top_types:
         print(f"  {type_name}: {count}")
 
-    if config.voxelize:
+    should_voxelize = config.voxelize or not dry_run
+    voxel_result: VoxelizationResult | None = None
+    if not dry_run and not config.voxelize:
+        print("voxelize_auto_enabled_for_write: True")
+    if should_voxelize:
         try:
-            voxel_summary = _voxelize_geometry(
+            voxel_result = _voxelize_geometry(
                 ifc_file,
                 selected_elements,
                 config=config,
                 transform=transform,
             )
+            voxel_summary = voxel_result.summary
             print("voxelization_summary:")
             print(f"  shapes_with_faces: {voxel_summary.shapes_with_faces}")
             print(f"  shapes_voxelized: {voxel_summary.shapes_voxelized}")
@@ -579,8 +736,27 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
         print("dry_run: True")
         return 0
 
-    print(
-        "write_mode: not implemented yet (Phase 3 will write blocks to world)",
-        file=sys.stderr,
-    )
-    return 3
+    if voxel_result is None:
+        print("error: write mode requires voxelization result", file=sys.stderr)
+        return 1
+
+    if not voxel_result.block_types_by_coord:
+        print("write_summary:")
+        print("  placed_blocks: 0")
+        print("  placed_block_types: <none>")
+        return 0
+
+    try:
+        placed_count, placed_by_block_name = _write_blocks_to_world(
+            config, voxel_result.block_types_by_coord
+        )
+    except Exception as exc:
+        print(f"error: failed to write world blocks: {exc}", file=sys.stderr)
+        return 1
+
+    print("write_summary:")
+    print(f"  placed_blocks: {placed_count}")
+    print("  placed_block_types:")
+    for block_name, count in placed_by_block_name.most_common():
+        print(f"    {block_name}: {count}")
+    return 0

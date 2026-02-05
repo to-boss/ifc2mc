@@ -50,7 +50,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="trimesh voxelization backend.",
     )
     import_parser.add_argument(
+        "--yaw-deg",
+        type=float,
+        default=0.0,
+        help="Rotate model around vertical axis after IFC->Minecraft axis conversion.",
+    )
+    import_parser.add_argument(
         "--y-offset", type=int, default=64, help="World Y offset for placement."
+    )
+    import_parser.add_argument(
+        "--snap-to-superflat",
+        dest="snap_to_superflat",
+        action="store_true",
+        default=True,
+        help="Auto-place using superflat ground level and clearance.",
+    )
+    import_parser.add_argument(
+        "--no-snap-to-superflat",
+        dest="snap_to_superflat",
+        action="store_false",
+        help="Disable superflat auto snap and use --y-offset directly.",
+    )
+    import_parser.add_argument(
+        "--superflat-ground-y",
+        type=int,
+        default=-60,
+        help="Superflat top surface Y level used for snap placement.",
+    )
+    import_parser.add_argument(
+        "--ground-clearance",
+        type=int,
+        default=1,
+        help="Blocks above superflat surface for model base when snapping.",
     )
     import_parser.add_argument(
         "--fixed-origin-x",
@@ -114,7 +145,11 @@ def main(argv: list[str] | None = None) -> int:
             voxel_pitch_m=args.voxel_pitch_m,
             voxelize=args.voxelize,
             voxel_method=args.voxel_method,
+            yaw_degrees=args.yaw_deg,
             y_offset=args.y_offset,
+            snap_to_superflat=args.snap_to_superflat,
+            superflat_ground_y=args.superflat_ground_y,
+            ground_clearance=args.ground_clearance,
             fixed_origin_x=args.fixed_origin_x,
             fixed_origin_z=args.fixed_origin_z,
             dimension=args.dimension,

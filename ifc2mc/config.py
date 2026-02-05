@@ -19,7 +19,11 @@ class ImportConfig:
     voxel_pitch_m: float = 0.5
     voxelize: bool = False
     voxel_method: VoxelMethod = "subdivide"
+    yaw_degrees: float = 0.0
     y_offset: int = 64
+    snap_to_superflat: bool = True
+    superflat_ground_y: int = -60
+    ground_clearance: int = 1
     fixed_origin_x: int = 0
     fixed_origin_z: int = 0
     dimension: str = "minecraft:overworld"
