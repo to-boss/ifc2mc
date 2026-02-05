@@ -72,6 +72,9 @@ class VoxelizationResult:
     material_buckets_by_coord: dict[tuple[int, int, int], str] = field(
         default_factory=dict
     )
+    material_names_by_coord: dict[tuple[int, int, int], str] = field(
+        default_factory=dict
+    )
 
 
 def _fmt_vec3(values: tuple[float, float, float], ndigits: int = 3) -> str:
@@ -174,6 +177,10 @@ def _extract_material_names(element: Any) -> tuple[str, ...]:
         seen.add(name)
         unique_names.append(name)
     return tuple(unique_names)
+
+
+def _normalize_material_name(material_name: str) -> str:
+    return material_name.strip().lower()
 
 
 def _infer_material_bucket(material_names: tuple[str, ...]) -> str | None:
@@ -488,6 +495,7 @@ def _voxelize_geometry(
 
     occupied_blocks: dict[tuple[int, int, int], str] = {}
     occupied_material_buckets: dict[tuple[int, int, int], str] = {}
+    occupied_material_names: dict[tuple[int, int, int], str] = {}
 
     shapes_with_faces = 0
     shapes_voxelized = 0
@@ -536,12 +544,17 @@ def _voxelize_geometry(
             try:
                 element = ifc_file.by_id(int(shape.id))
                 element_type = str(element.is_a())
-                element_material_bucket = _infer_material_bucket(
-                    _extract_material_names(element)
+                element_material_names = _extract_material_names(element)
+                element_material_bucket = _infer_material_bucket(element_material_names)
+                element_material_name = (
+                    _normalize_material_name(element_material_names[0])
+                    if element_material_names
+                    else None
                 )
             except Exception:
                 element_type = "<unknown>"
                 element_material_bucket = None
+                element_material_name = None
 
             bx = np.floor(
                 (points_mc_m[:, 0] + transform.shift_x_m) / config.meters_per_block
@@ -566,6 +579,10 @@ def _voxelize_geometry(
                         occupied_material_buckets[coord] = element_material_bucket
                     else:
                         occupied_material_buckets.pop(coord, None)
+                    if element_material_name is not None:
+                        occupied_material_names[coord] = element_material_name
+                    else:
+                        occupied_material_names.pop(coord, None)
                 else:
                     winning_type = _resolve_overlap_ifc_type(
                         existing_type, element_type, config
@@ -576,6 +593,10 @@ def _voxelize_geometry(
                             occupied_material_buckets[coord] = element_material_bucket
                         else:
                             occupied_material_buckets.pop(coord, None)
+                        if element_material_name is not None:
+                            occupied_material_names[coord] = element_material_name
+                        else:
+                            occupied_material_names.pop(coord, None)
 
         except Exception:
             shapes_failed += 1
@@ -632,6 +653,7 @@ def _voxelize_geometry(
         ),
         block_types_by_coord=occupied_blocks,
         material_buckets_by_coord=occupied_material_buckets,
+        material_names_by_coord=occupied_material_names,
     )
 
 
@@ -705,13 +727,23 @@ def _connection_properties_for_block(
 
 def _resolve_block_name(
     ifc_type: str,
+    material_name: str | None,
     material_bucket: str | None,
     config: ImportConfig,
 ) -> str:
+    if material_name is not None:
+        typed_material_name_key = f"{ifc_type}|material_name:{material_name}"
+        if typed_material_name_key in config.block_map:
+            return config.block_map[typed_material_name_key]
     if material_bucket is not None:
         typed_material_key = f"{ifc_type}|{material_bucket}"
         if typed_material_key in config.block_map:
             return config.block_map[typed_material_key]
+    if material_name is not None:
+        material_name_key = f"material_name:{material_name}"
+        if material_name_key in config.block_map:
+            return config.block_map[material_name_key]
+    if material_bucket is not None:
         material_key = f"material:{material_bucket}"
         if material_key in config.block_map:
             return config.block_map[material_key]
@@ -750,6 +782,7 @@ def _write_blocks_to_world(
     config: ImportConfig,
     block_types_by_coord: dict[tuple[int, int, int], str],
     material_buckets_by_coord: dict[tuple[int, int, int], str],
+    material_names_by_coord: dict[tuple[int, int, int], str],
 ) -> tuple[int, Counter[str], int]:
     import amulet
     from amulet.api.block import Block
@@ -767,6 +800,7 @@ def _write_blocks_to_world(
     resolved_block_names = {
         coord: _resolve_block_name(
             ifc_type,
+            material_names_by_coord.get(coord),
             material_buckets_by_coord.get(coord),
             config,
         )
@@ -1032,6 +1066,7 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
                 block_preview_counts[
                     _resolve_block_name(
                         ifc_type,
+                        voxel_result.material_names_by_coord.get(coord),
                         voxel_result.material_buckets_by_coord.get(coord),
                         config,
                     )
@@ -1084,6 +1119,7 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
             config,
             voxel_result.block_types_by_coord,
             voxel_result.material_buckets_by_coord,
+            voxel_result.material_names_by_coord,
         )
     except Exception as exc:
         print(f"error: failed to write world blocks: {exc}", file=sys.stderr)

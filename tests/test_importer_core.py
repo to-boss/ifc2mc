@@ -140,18 +140,26 @@ def test_parse_block_name_variants() -> None:
 def test_resolve_block_name_prefers_config_map() -> None:
     cfg = _base_config(
         block_map={
+            "IfcRailing|material_name:wood-generic": "minecraft:dark_oak_fence",
+            "material_name:wood-generic": "minecraft:spruce_planks",
             "material:wood": "minecraft:oak_planks",
             "IfcRailing|wood": "minecraft:oak_fence",
             "IfcColumn": "minecraft:stone_bricks",
         }
     )
     assert (
-        _resolve_block_name("IfcRailing", "wood", cfg)
-        == "minecraft:oak_fence"
+        _resolve_block_name("IfcRailing", "wood-generic", "wood", cfg)
+        == "minecraft:dark_oak_fence"
     )
-    assert _resolve_block_name("IfcBeam", "wood", cfg) == "minecraft:oak_planks"
-    assert _resolve_block_name("IfcColumn", None, cfg) == "minecraft:stone_bricks"
-    assert _resolve_block_name("IfcWall", None, cfg) == "minecraft:stone"
+    assert (
+        _resolve_block_name("IfcBeam", "wood-generic", "wood", cfg)
+        == "minecraft:spruce_planks"
+    )
+    assert _resolve_block_name("IfcBeam", None, "wood", cfg) == "minecraft:oak_planks"
+    assert (
+        _resolve_block_name("IfcColumn", None, None, cfg) == "minecraft:stone_bricks"
+    )
+    assert _resolve_block_name("IfcWall", None, None, cfg) == "minecraft:stone"
 
 
 def test_infer_material_bucket_from_common_names() -> None:
@@ -384,7 +392,11 @@ def test_run_import_write_mode_prints_voxelize_and_write_timing(
     )
     monkeypatch.setattr(
         "ifc2mc.importer._write_blocks_to_world",
-        lambda _cfg, _blocks, _materials: (1, Counter({"minecraft:stone": 1}), 1),
+        lambda _cfg, _blocks, _buckets, _material_names: (
+            1,
+            Counter({"minecraft:stone": 1}),
+            1,
+        ),
     )
 
     rc = run_import(

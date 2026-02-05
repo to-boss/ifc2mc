@@ -40,26 +40,35 @@ def default_block_map() -> dict[str, str]:
 
     return {
         # Material bucket defaults.
-        "material:wood": "minecraft:oak_planks",
+        "material:wood": "minecraft:spruce_planks",
         "material:metal": "minecraft:iron_block",
-        "material:concrete": "minecraft:smooth_stone",
-        "material:masonry": "minecraft:stone_bricks",
+        "material:concrete": "minecraft:light_gray_concrete",
+        "material:masonry": "minecraft:polished_andesite",
         "material:glass": "minecraft:glass",
-        "material:soil": "minecraft:dirt",
+        "material:soil": "minecraft:coarse_dirt",
+        # Material-name overrides for common infrastructure naming.
+        "material_name:wood-generic": "minecraft:spruce_planks",
+        "material_name:concrete_reinforced_in-situ": "minecraft:light_gray_concrete",
+        "material_name:concrete_reinforced_prefab": "minecraft:gray_concrete",
+        "material_name:stone_granite_masonry": "minecraft:polished_andesite",
+        "material_name:metal_copper_generic": "minecraft:cut_copper",
+        "material_name:bulk-material_soil_generic": "minecraft:coarse_dirt",
+        "material_name:virtual_black": "minecraft:black_concrete",
         # Type+material overrides for more recognizable silhouettes.
-        "IfcRailing|wood": "minecraft:oak_fence",
+        "IfcRailing|wood": "minecraft:spruce_fence",
         "IfcRailing|metal": "minecraft:iron_bars",
+        "IfcWall|masonry": "minecraft:stone_brick_wall",
         "IfcBeam": "minecraft:stone",
         "IfcColumn": "minecraft:stone_bricks",
-        "IfcSlab": "minecraft:smooth_stone",
+        "IfcSlab": "minecraft:light_gray_concrete",
         "IfcFooting": "minecraft:andesite",
         "IfcMember": "minecraft:polished_andesite",
         "IfcWall": "minecraft:stone_bricks",
-        "IfcEarthworksFill": "minecraft:dirt",
+        "IfcEarthworksFill": "minecraft:coarse_dirt",
         "IfcBuildingElementProxy": "minecraft:stone",
         "IfcBridgePart": "minecraft:stone_bricks",
         "IfcElementAssembly": "minecraft:stone_bricks",
-        "IfcSign": "minecraft:stone",
+        "IfcSign": "minecraft:black_concrete",
     }
 
 
