@@ -11,6 +11,9 @@ from typing import Any
 import ifcopenshell
 import ifcopenshell.geom
 import ifcopenshell.util.unit
+import numpy as np
+import trimesh
+import trimesh.voxel.creation
 
 from .config import ImportConfig
 
@@ -33,6 +36,31 @@ class PlacementPlan:
     chunk_max_x: int
     chunk_min_z: int
     chunk_max_z: int
+
+
+@dataclass(slots=True)
+class PlacementTransform:
+    shift_x_m: float
+    shift_y_m: float
+    shift_z_m: float
+    world_x_offset_blocks: float
+    world_z_offset_blocks: float
+
+
+@dataclass(slots=True)
+class VoxelizationSummary:
+    shapes_with_faces: int
+    shapes_voxelized: int
+    shapes_failed: int
+    raw_voxel_points: int
+    unique_block_count: int
+    block_bbox_min_int: tuple[int, int, int] | None
+    block_bbox_max_int: tuple[int, int, int] | None
+    chunk_min_x: int | None
+    chunk_max_x: int | None
+    chunk_min_z: int | None
+    chunk_max_z: int | None
+    type_counts: Counter[str]
 
 
 def _fmt_vec3(values: tuple[float, float, float], ndigits: int = 3) -> str:
@@ -161,34 +189,24 @@ def _plan_block_placement(
 ) -> PlacementPlan:
     min_x, min_y, min_z = bbox_min_m
     max_x, max_y, max_z = bbox_max_m
-
-    if config.origin_mode == "centered":
-        shift_x = -((min_x + max_x) / 2.0)
-        shift_z = -((min_z + max_z) / 2.0)
-        world_x_offset_blocks = 0.0
-        world_z_offset_blocks = 0.0
-    elif config.origin_mode == "min_corner":
-        shift_x = -min_x
-        shift_z = -min_z
-        world_x_offset_blocks = 0.0
-        world_z_offset_blocks = 0.0
-    else:
-        shift_x = 0.0
-        shift_z = 0.0
-        world_x_offset_blocks = float(config.fixed_origin_x)
-        world_z_offset_blocks = float(config.fixed_origin_z)
-
-    # Keep the structure on or above the configured Y offset.
-    shift_y = -min_y
+    transform = _compute_placement_transform(bbox_min_m, bbox_max_m, config)
 
     meters_per_block = config.meters_per_block
-    min_block_x = (min_x + shift_x) / meters_per_block + world_x_offset_blocks
-    min_block_y = (min_y + shift_y) / meters_per_block + float(config.y_offset)
-    min_block_z = (min_z + shift_z) / meters_per_block + world_z_offset_blocks
+    min_block_x = (
+        (min_x + transform.shift_x_m) / meters_per_block + transform.world_x_offset_blocks
+    )
+    min_block_y = (min_y + transform.shift_y_m) / meters_per_block + float(config.y_offset)
+    min_block_z = (
+        (min_z + transform.shift_z_m) / meters_per_block + transform.world_z_offset_blocks
+    )
 
-    max_block_x = (max_x + shift_x) / meters_per_block + world_x_offset_blocks
-    max_block_y = (max_y + shift_y) / meters_per_block + float(config.y_offset)
-    max_block_z = (max_z + shift_z) / meters_per_block + world_z_offset_blocks
+    max_block_x = (
+        (max_x + transform.shift_x_m) / meters_per_block + transform.world_x_offset_blocks
+    )
+    max_block_y = (max_y + transform.shift_y_m) / meters_per_block + float(config.y_offset)
+    max_block_z = (
+        (max_z + transform.shift_z_m) / meters_per_block + transform.world_z_offset_blocks
+    )
 
     min_block_x_i = math.floor(min_block_x)
     min_block_y_i = math.floor(min_block_y)
@@ -212,6 +230,194 @@ def _plan_block_placement(
         chunk_max_x=chunk_max_x,
         chunk_min_z=chunk_min_z,
         chunk_max_z=chunk_max_z,
+    )
+
+
+def _compute_placement_transform(
+    bbox_min_m: tuple[float, float, float],
+    bbox_max_m: tuple[float, float, float],
+    config: ImportConfig,
+) -> PlacementTransform:
+    min_x, min_y, min_z = bbox_min_m
+    max_x, _, max_z = bbox_max_m
+
+    if config.origin_mode == "centered":
+        shift_x = -((min_x + max_x) / 2.0)
+        shift_z = -((min_z + max_z) / 2.0)
+        world_x_offset_blocks = 0.0
+        world_z_offset_blocks = 0.0
+    elif config.origin_mode == "min_corner":
+        shift_x = -min_x
+        shift_z = -min_z
+        world_x_offset_blocks = 0.0
+        world_z_offset_blocks = 0.0
+    else:
+        shift_x = 0.0
+        shift_z = 0.0
+        world_x_offset_blocks = float(config.fixed_origin_x)
+        world_z_offset_blocks = float(config.fixed_origin_z)
+
+    # Keep the structure on or above the configured Y offset.
+    shift_y = -min_y
+
+    return PlacementTransform(
+        shift_x_m=shift_x,
+        shift_y_m=shift_y,
+        shift_z_m=shift_z,
+        world_x_offset_blocks=world_x_offset_blocks,
+        world_z_offset_blocks=world_z_offset_blocks,
+    )
+
+
+def _voxelize_geometry(
+    ifc_file: ifcopenshell.file,
+    entities: list[Any],
+    *,
+    config: ImportConfig,
+    transform: PlacementTransform,
+) -> VoxelizationSummary:
+    settings = ifcopenshell.geom.settings()
+    settings.set("use-world-coords", True)
+    settings.set("convert-back-units", False)
+
+    iterator = ifcopenshell.geom.iterator(
+        settings,
+        ifc_file,
+        max(1, multiprocessing.cpu_count()),
+        include=entities,
+    )
+    if not iterator.initialize():
+        return VoxelizationSummary(
+            shapes_with_faces=0,
+            shapes_voxelized=0,
+            shapes_failed=0,
+            raw_voxel_points=0,
+            unique_block_count=0,
+            block_bbox_min_int=None,
+            block_bbox_max_int=None,
+            chunk_min_x=None,
+            chunk_max_x=None,
+            chunk_min_z=None,
+            chunk_max_z=None,
+            type_counts=Counter(),
+        )
+
+    occupied_blocks: set[tuple[int, int, int]] = set()
+    type_counts: Counter[str] = Counter()
+
+    shapes_with_faces = 0
+    shapes_voxelized = 0
+    shapes_failed = 0
+    raw_voxel_points = 0
+
+    while True:
+        shape = iterator.get()
+        verts = shape.geometry.verts
+        faces = shape.geometry.faces
+        if not verts or not faces:
+            if not iterator.next():
+                break
+            continue
+
+        shapes_with_faces += 1
+        try:
+            vertices = np.asarray(verts, dtype=np.float64).reshape((-1, 3))
+            face_indices = np.asarray(faces, dtype=np.int64).reshape((-1, 3))
+            mesh = trimesh.Trimesh(vertices=vertices, faces=face_indices, process=False)
+            if mesh.is_empty:
+                if not iterator.next():
+                    break
+                continue
+
+            voxel_grid = trimesh.voxel.creation.voxelize(
+                mesh,
+                pitch=float(config.voxel_pitch_m),
+                method=config.voxel_method,
+            )
+            if voxel_grid is None:
+                if not iterator.next():
+                    break
+                continue
+
+            points = np.asarray(voxel_grid.points, dtype=np.float64)
+            if points.size == 0:
+                if not iterator.next():
+                    break
+                continue
+
+            raw_voxel_points += int(points.shape[0])
+            shapes_voxelized += 1
+
+            bx = np.floor(
+                (points[:, 0] + transform.shift_x_m) / config.meters_per_block
+                + transform.world_x_offset_blocks
+            ).astype(np.int64)
+            by = np.floor(
+                (points[:, 1] + transform.shift_y_m) / config.meters_per_block
+                + float(config.y_offset)
+            ).astype(np.int64)
+            bz = np.floor(
+                (points[:, 2] + transform.shift_z_m) / config.meters_per_block
+                + transform.world_z_offset_blocks
+            ).astype(np.int64)
+
+            unique_for_shape = np.unique(np.column_stack((bx, by, bz)), axis=0)
+            for block_xyz in unique_for_shape:
+                occupied_blocks.add((int(block_xyz[0]), int(block_xyz[1]), int(block_xyz[2])))
+
+            try:
+                element = ifc_file.by_id(int(shape.id))
+                type_counts[element.is_a()] += int(unique_for_shape.shape[0])
+            except Exception:
+                type_counts["<unknown>"] += int(unique_for_shape.shape[0])
+
+        except Exception:
+            shapes_failed += 1
+
+        if not iterator.next():
+            break
+
+    if not occupied_blocks:
+        return VoxelizationSummary(
+            shapes_with_faces=shapes_with_faces,
+            shapes_voxelized=shapes_voxelized,
+            shapes_failed=shapes_failed,
+            raw_voxel_points=raw_voxel_points,
+            unique_block_count=0,
+            block_bbox_min_int=None,
+            block_bbox_max_int=None,
+            chunk_min_x=None,
+            chunk_max_x=None,
+            chunk_min_z=None,
+            chunk_max_z=None,
+            type_counts=type_counts,
+        )
+
+    min_x = min(x for x, _, _ in occupied_blocks)
+    min_y = min(y for _, y, _ in occupied_blocks)
+    min_z = min(z for _, _, z in occupied_blocks)
+    max_x = max(x for x, _, _ in occupied_blocks)
+    max_y = max(y for _, y, _ in occupied_blocks)
+    max_z = max(z for _, _, z in occupied_blocks)
+
+    chunk_min_x = math.floor(min_x / 16)
+    chunk_max_x = math.floor(max_x / 16)
+    chunk_min_z = math.floor(min_z / 16)
+    chunk_max_z = math.floor(max_z / 16)
+
+    return VoxelizationSummary(
+        shapes_with_faces=shapes_with_faces,
+        shapes_voxelized=shapes_voxelized,
+        shapes_failed=shapes_failed,
+        raw_voxel_points=raw_voxel_points,
+        unique_block_count=len(occupied_blocks),
+        block_bbox_min_int=(min_x, min_y, min_z),
+        block_bbox_max_int=(max_x, max_y, max_z),
+        chunk_min_x=chunk_min_x,
+        chunk_max_x=chunk_max_x,
+        chunk_min_z=chunk_min_z,
+        chunk_max_z=chunk_max_z,
+        type_counts=type_counts,
     )
 
 
@@ -262,6 +468,9 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     print(f"origin_mode: {config.origin_mode}")
     print(f"meters_per_block: {config.meters_per_block}")
     print(f"voxel_pitch_m: {config.voxel_pitch_m}")
+    print(f"voxelize: {config.voxelize}")
+    if config.voxelize:
+        print(f"voxel_method: {config.voxel_method}")
     print(f"y_offset: {config.y_offset}")
     if config.origin_mode == "fixed":
         print(f"fixed_origin_xz: ({config.fixed_origin_x}, {config.fixed_origin_z})")
@@ -299,6 +508,7 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     bbox_max_project_units = tuple(value / ifc_unit_scale_m for value in bbox_max_m)
 
     placement = _plan_block_placement(bbox_min_m, bbox_max_m, config)
+    transform = _compute_placement_transform(bbox_min_m, bbox_max_m, config)
     chunk_count_x = placement.chunk_max_x - placement.chunk_min_x + 1
     chunk_count_z = placement.chunk_max_z - placement.chunk_min_z + 1
     chunk_count = chunk_count_x * chunk_count_z
@@ -323,6 +533,47 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     print("top_element_types:")
     for type_name, count in top_types:
         print(f"  {type_name}: {count}")
+
+    if config.voxelize:
+        try:
+            voxel_summary = _voxelize_geometry(
+                ifc_file,
+                selected_elements,
+                config=config,
+                transform=transform,
+            )
+            print("voxelization_summary:")
+            print(f"  shapes_with_faces: {voxel_summary.shapes_with_faces}")
+            print(f"  shapes_voxelized: {voxel_summary.shapes_voxelized}")
+            print(f"  shapes_failed: {voxel_summary.shapes_failed}")
+            print(f"  raw_voxel_points: {voxel_summary.raw_voxel_points}")
+            print(f"  unique_block_count: {voxel_summary.unique_block_count}")
+            if voxel_summary.block_bbox_min_int is not None:
+                print(
+                    "  voxel_block_bbox_min_int: "
+                    f"{_fmt_int3(voxel_summary.block_bbox_min_int)}"
+                )
+                print(
+                    "  voxel_block_bbox_max_int: "
+                    f"{_fmt_int3(voxel_summary.block_bbox_max_int)}"
+                )
+                print(
+                    "  voxel_chunk_range_xz: "
+                    f"x[{voxel_summary.chunk_min_x},{voxel_summary.chunk_max_x}] "
+                    f"z[{voxel_summary.chunk_min_z},{voxel_summary.chunk_max_z}]"
+                )
+                voxel_chunk_count_x = voxel_summary.chunk_max_x - voxel_summary.chunk_min_x + 1
+                voxel_chunk_count_z = voxel_summary.chunk_max_z - voxel_summary.chunk_min_z + 1
+                print(f"  voxel_chunk_count: {voxel_chunk_count_x * voxel_chunk_count_z}")
+            else:
+                print("  voxel_block_bbox: <none>")
+
+            print("  top_voxelized_types:")
+            for type_name, count in voxel_summary.type_counts.most_common(10):
+                print(f"    {type_name}: {count}")
+        except Exception as exc:
+            print(f"error: voxelization failed: {exc}", file=sys.stderr)
+            return 1
 
     if dry_run:
         print("dry_run: True")

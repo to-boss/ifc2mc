@@ -13,4 +13,5 @@ IFC to Minecraft importer.
 uv sync
 uv run ifc2mc --help
 uv run ifc2mc import --ifc path/to/model.ifc --world path/to/world --dry-run
+uv run ifc2mc import --ifc path/to/model.ifc --world path/to/world --dry-run --voxelize
 ```

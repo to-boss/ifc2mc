@@ -39,6 +39,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Voxel pitch in meters.",
     )
     import_parser.add_argument(
+        "--voxelize",
+        action="store_true",
+        help="Run Phase 2 voxelization and block footprint reporting.",
+    )
+    import_parser.add_argument(
+        "--voxel-method",
+        choices=("subdivide", "ray", "binvox"),
+        default="subdivide",
+        help="trimesh voxelization backend.",
+    )
+    import_parser.add_argument(
         "--y-offset", type=int, default=64, help="World Y offset for placement."
     )
     import_parser.add_argument(
@@ -101,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
             origin_mode=args.origin_mode,
             meters_per_block=args.meters_per_block,
             voxel_pitch_m=args.voxel_pitch_m,
+            voxelize=args.voxelize,
+            voxel_method=args.voxel_method,
             y_offset=args.y_offset,
             fixed_origin_x=args.fixed_origin_x,
             fixed_origin_z=args.fixed_origin_z,

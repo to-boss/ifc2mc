@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 OriginMode = Literal["centered", "min_corner", "fixed"]
+VoxelMethod = Literal["subdivide", "ray", "binvox"]
 
 
 @dataclass(slots=True)
@@ -16,6 +17,8 @@ class ImportConfig:
     origin_mode: OriginMode = "centered"
     meters_per_block: float = 0.5
     voxel_pitch_m: float = 0.5
+    voxelize: bool = False
+    voxel_method: VoxelMethod = "subdivide"
     y_offset: int = 64
     fixed_origin_x: int = 0
     fixed_origin_z: int = 0
