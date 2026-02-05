@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import multiprocessing
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +76,28 @@ def _fmt_vec3(values: tuple[float, float, float], ndigits: int = 3) -> str:
 
 def _fmt_int3(values: tuple[int, int, int]) -> str:
     return f"({values[0]}, {values[1]}, {values[2]})"
+
+
+def _fmt_ms(value_ms: float) -> str:
+    return f"{value_ms:.1f}"
+
+
+def _print_timing_summary(
+    *,
+    open_validate_ms: float,
+    scan_ms: float,
+    voxelize_ms: float | None,
+    write_ms: float | None,
+    total_ms: float,
+) -> None:
+    print("timing_summary_ms:")
+    print(f"  open_validate: {_fmt_ms(open_validate_ms)}")
+    print(f"  scan_geometry: {_fmt_ms(scan_ms)}")
+    if voxelize_ms is not None:
+        print(f"  voxelize: {_fmt_ms(voxelize_ms)}")
+    if write_ms is not None:
+        print(f"  write_world: {_fmt_ms(write_ms)}")
+    print(f"  total: {_fmt_ms(total_ms)}")
 
 
 def _ifc_points_to_mc(points_ifc_m: np.ndarray, yaw_degrees: float) -> np.ndarray:
@@ -625,6 +648,8 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
         )
         return 2
 
+    run_started_at = time.perf_counter()
+    open_validate_started_at = time.perf_counter()
     try:
         ifc_file = ifcopenshell.open(str(ifc_path))
         _validate_ifc_types(ifc_file, config.include_types, label="include")
@@ -632,7 +657,9 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     except Exception as exc:
         print(f"error: failed to open/validate IFC model: {exc}", file=sys.stderr)
         return 1
+    open_validate_ms = (time.perf_counter() - open_validate_started_at) * 1000.0
 
+    scan_started_at = time.perf_counter()
     try:
         selected_elements = _collect_candidate_elements(
             ifc_file, config.include_types, config.exclude_types
@@ -643,6 +670,7 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     except Exception as exc:
         print(f"error: failed during IFC geometry scan: {exc}", file=sys.stderr)
         return 1
+    scan_ms = (time.perf_counter() - scan_started_at) * 1000.0
 
     print("IFC Import Report")
     print(f"ifc_path: {ifc_path}")
@@ -677,6 +705,14 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     if geometry.bbox_min_proj is None or geometry.bbox_max_proj is None:
         print("geometry_bbox: <none>")
         if dry_run:
+            total_ms = (time.perf_counter() - run_started_at) * 1000.0
+            _print_timing_summary(
+                open_validate_ms=open_validate_ms,
+                scan_ms=scan_ms,
+                voxelize_ms=None,
+                write_ms=None,
+                total_ms=total_ms,
+            )
             print("dry_run: True")
             return 0
         print("error: model has no geometric output to write", file=sys.stderr)
@@ -733,9 +769,11 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
 
     should_voxelize = config.voxelize or not dry_run
     voxel_result: VoxelizationResult | None = None
+    voxelize_ms: float | None = None
     if not dry_run and not config.voxelize:
         print("voxelize_auto_enabled_for_write: True")
     if should_voxelize:
+        voxelize_started_at = time.perf_counter()
         try:
             voxel_result = _voxelize_geometry(
                 ifc_file,
@@ -743,6 +781,7 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
                 config=config,
                 transform=transform,
             )
+            voxelize_ms = (time.perf_counter() - voxelize_started_at) * 1000.0
             voxel_summary = voxel_result.summary
             print("voxelization_summary:")
             print(f"  shapes_with_faces: {voxel_summary.shapes_with_faces}")
@@ -778,6 +817,14 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
             return 1
 
     if dry_run:
+        total_ms = (time.perf_counter() - run_started_at) * 1000.0
+        _print_timing_summary(
+            open_validate_ms=open_validate_ms,
+            scan_ms=scan_ms,
+            voxelize_ms=voxelize_ms,
+            write_ms=None,
+            total_ms=total_ms,
+        )
         print("dry_run: True")
         return 0
 
@@ -790,8 +837,17 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
         print("  placed_blocks: 0")
         print("  touched_chunks: 0")
         print("  placed_block_types: <none>")
+        total_ms = (time.perf_counter() - run_started_at) * 1000.0
+        _print_timing_summary(
+            open_validate_ms=open_validate_ms,
+            scan_ms=scan_ms,
+            voxelize_ms=voxelize_ms,
+            write_ms=0.0,
+            total_ms=total_ms,
+        )
         return 0
 
+    write_started_at = time.perf_counter()
     try:
         placed_count, placed_by_block_name, touched_chunks = _write_blocks_to_world(
             config, voxel_result.block_types_by_coord
@@ -799,6 +855,7 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     except Exception as exc:
         print(f"error: failed to write world blocks: {exc}", file=sys.stderr)
         return 1
+    write_ms = (time.perf_counter() - write_started_at) * 1000.0
 
     print("write_summary:")
     print(f"  placed_blocks: {placed_count}")
@@ -806,4 +863,12 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     print("  placed_block_types:")
     for block_name, count in placed_by_block_name.most_common():
         print(f"    {block_name}: {count}")
+    total_ms = (time.perf_counter() - run_started_at) * 1000.0
+    _print_timing_summary(
+        open_validate_ms=open_validate_ms,
+        scan_ms=scan_ms,
+        voxelize_ms=voxelize_ms,
+        write_ms=write_ms,
+        total_ms=total_ms,
+    )
     return 0

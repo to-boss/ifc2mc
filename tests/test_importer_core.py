@@ -8,9 +8,11 @@ from ifc2mc.config import ImportConfig
 from ifc2mc.importer import (
     _count_touched_chunks,
     _compute_placement_transform,
+    _fmt_ms,
     _ifc_points_to_mc,
     _parse_block_name,
     _plan_block_placement,
+    _print_timing_summary,
     _resolve_block_name,
     _resolve_overlap_ifc_type,
     run_import,
@@ -140,6 +142,41 @@ def test_count_touched_chunks_handles_negative_coordinates() -> None:
         (-17, 64, -1): "IfcWall",
     }
     assert _count_touched_chunks(blocks) == 4
+
+
+def test_fmt_ms_rounds_to_single_decimal_place() -> None:
+    assert _fmt_ms(12.34) == "12.3"
+    assert _fmt_ms(12.36) == "12.4"
+
+
+def test_print_timing_summary_prints_optional_fields_only_when_provided(
+    capsys: object,
+) -> None:
+    _print_timing_summary(
+        open_validate_ms=1.1,
+        scan_ms=2.2,
+        voxelize_ms=None,
+        write_ms=None,
+        total_ms=3.3,
+    )
+    output_without_optional = capsys.readouterr().out
+    assert "timing_summary_ms:" in output_without_optional
+    assert "open_validate: 1.1" in output_without_optional
+    assert "scan_geometry: 2.2" in output_without_optional
+    assert "voxelize:" not in output_without_optional
+    assert "write_world:" not in output_without_optional
+    assert "total: 3.3" in output_without_optional
+
+    _print_timing_summary(
+        open_validate_ms=4.4,
+        scan_ms=5.5,
+        voxelize_ms=6.6,
+        write_ms=7.7,
+        total_ms=8.8,
+    )
+    output_with_optional = capsys.readouterr().out
+    assert "voxelize: 6.6" in output_with_optional
+    assert "write_world: 7.7" in output_with_optional
 
 
 def test_run_import_validates_numeric_inputs_early() -> None:

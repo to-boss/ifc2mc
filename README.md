@@ -29,3 +29,4 @@ Notes:
 - Overlapping voxel candidates are resolved deterministically using IFC type priority defaults in `ifc2mc/config.py`.
 - Use `--clear-default-type-priority` with one or more `--type-priority IFCType=priority` flags to fully control overlap precedence.
 - Write mode reports `touched_chunks` to help estimate world-edit footprint.
+- Runs report `timing_summary_ms` for open/validate, geometry scan, voxelization, write, and total runtime.
