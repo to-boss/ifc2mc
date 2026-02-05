@@ -11,6 +11,7 @@ from ifc2mc.importer import (
     GeometryScan,
     VoxelizationResult,
     VoxelizationSummary,
+    _connection_properties_for_block,
     _count_touched_chunks,
     _compute_placement_transform,
     _fmt_ms,
@@ -180,6 +181,30 @@ def test_count_touched_chunks_handles_negative_coordinates() -> None:
         (-17, 64, -1): "IfcWall",
     }
     assert _count_touched_chunks(blocks) == 4
+
+
+def test_connection_properties_for_fence_blocks() -> None:
+    resolved = {
+        (0, 10, 0): "minecraft:oak_fence",
+        (1, 10, 0): "minecraft:oak_fence",
+        (0, 10, -1): "minecraft:stone_bricks",
+    }
+    props = _connection_properties_for_block("minecraft:oak_fence", (0, 10, 0), resolved)
+    assert props == {
+        "north": True,
+        "east": True,
+        "south": False,
+        "west": False,
+        "waterlogged": False,
+    }
+
+
+def test_connection_properties_for_non_connectable_block_returns_none() -> None:
+    resolved = {(0, 10, 0): "minecraft:stone_bricks"}
+    assert (
+        _connection_properties_for_block("minecraft:stone_bricks", (0, 10, 0), resolved)
+        is None
+    )
 
 
 def test_fmt_ms_rounds_to_single_decimal_place() -> None:

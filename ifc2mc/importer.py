@@ -647,6 +647,41 @@ def _parse_block_name(block_name: str) -> tuple[str, str]:
     return ("minecraft", raw)
 
 
+_HORIZONTAL_DIRECTIONS: tuple[tuple[str, tuple[int, int]], ...] = (
+    ("north", (0, -1)),
+    ("east", (1, 0)),
+    ("south", (0, 1)),
+    ("west", (-1, 0)),
+)
+
+
+def _connection_properties_for_block(
+    block_name: str,
+    coord: tuple[int, int, int],
+    resolved_block_names: dict[tuple[int, int, int], str],
+) -> dict[str, bool] | None:
+    namespace, base_name = _parse_block_name(block_name)
+    if namespace != "minecraft":
+        return None
+
+    supports_connections = (
+        base_name.endswith("_fence")
+        or base_name == "iron_bars"
+        or base_name.endswith("_glass_pane")
+    )
+    if not supports_connections:
+        return None
+
+    x, y, z = coord
+    properties: dict[str, bool] = {}
+    for direction_name, (delta_x, delta_z) in _HORIZONTAL_DIRECTIONS:
+        properties[direction_name] = (
+            (x + delta_x, y, z + delta_z) in resolved_block_names
+        )
+    properties["waterlogged"] = False
+    return properties
+
+
 def _resolve_block_name(
     ifc_type: str,
     material_bucket: str | None,
@@ -697,12 +732,25 @@ def _write_blocks_to_world(
 ) -> tuple[int, Counter[str], int]:
     import amulet
     from amulet.api.block import Block
+    from amulet_nbt import StringTag
 
     level = amulet.load_level(str(config.world_path))
     game_version = (config.game_platform, config.game_version)
     placed_by_block_name: Counter[str] = Counter()
     block_cache: dict[str, Block] = {}
+    connected_block_cache: dict[
+        tuple[str, tuple[tuple[str, bool], ...]],
+        Block,
+    ] = {}
     touched_chunks: set[tuple[int, int]] = set()
+    resolved_block_names = {
+        coord: _resolve_block_name(
+            ifc_type,
+            material_buckets_by_coord.get(coord),
+            config,
+        )
+        for coord, ifc_type in block_types_by_coord.items()
+    }
 
     def _write_sort_key(
         item: tuple[tuple[int, int, int], str],
@@ -718,13 +766,31 @@ def _write_blocks_to_world(
 
     try:
         for (x, y, z), ifc_type in sorted_items:
-            material_bucket = material_buckets_by_coord.get((x, y, z))
-            block_name = _resolve_block_name(ifc_type, material_bucket, config)
-            block = block_cache.get(block_name)
-            if block is None:
-                namespace, base_name = _parse_block_name(block_name)
-                block = Block(namespace, base_name)
-                block_cache[block_name] = block
+            coord = (x, y, z)
+            block_name = resolved_block_names[coord]
+            connection_properties = _connection_properties_for_block(
+                block_name,
+                coord,
+                resolved_block_names,
+            )
+            if connection_properties is None:
+                block = block_cache.get(block_name)
+                if block is None:
+                    namespace, base_name = _parse_block_name(block_name)
+                    block = Block(namespace, base_name)
+                    block_cache[block_name] = block
+            else:
+                connection_key = tuple(sorted(connection_properties.items()))
+                cache_key = (block_name, connection_key)
+                block = connected_block_cache.get(cache_key)
+                if block is None:
+                    namespace, base_name = _parse_block_name(block_name)
+                    properties_nbt = {
+                        key: StringTag("true" if value else "false")
+                        for key, value in connection_key
+                    }
+                    block = Block(namespace, base_name, properties_nbt)
+                    connected_block_cache[cache_key] = block
 
             touched_chunks.add(_chunk_coords_for_block(int(x), int(z)))
             level.set_version_block(
