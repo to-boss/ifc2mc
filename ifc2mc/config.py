@@ -32,6 +32,7 @@ class ImportConfig:
     include_types: tuple[str, ...] = ()
     exclude_types: tuple[str, ...] = ()
     block_map: dict[str, str] = field(default_factory=dict)
+    type_priority: dict[str, int] = field(default_factory=dict)
 
 
 def default_block_map() -> dict[str, str]:
@@ -43,4 +44,17 @@ def default_block_map() -> dict[str, str]:
         "IfcSlab": "minecraft:smooth_stone",
         "IfcFooting": "minecraft:andesite",
         "IfcMember": "minecraft:polished_andesite",
+    }
+
+
+def default_type_priority() -> dict[str, int]:
+    """Default deterministic priority for overlapping IFC voxels."""
+
+    return {
+        "IfcFooting": 100,
+        "IfcColumn": 90,
+        "IfcBeam": 80,
+        "IfcSlab": 70,
+        "IfcWall": 60,
+        "IfcMember": 50,
     }

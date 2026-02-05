@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .config import ImportConfig, default_block_map
+from .config import ImportConfig, default_block_map, default_type_priority
 from .importer import run_import
 
 
@@ -158,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             include_types=tuple(args.include_type),
             exclude_types=tuple(args.exclude_type),
             block_map=default_block_map(),
+            type_priority=default_type_priority(),
         )
         return run_import(config, dry_run=args.dry_run)
 

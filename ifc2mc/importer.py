@@ -368,7 +368,6 @@ def _voxelize_geometry(
         )
 
     occupied_blocks: dict[tuple[int, int, int], str] = {}
-    type_counts: Counter[str] = Counter()
 
     shapes_with_faces = 0
     shapes_voxelized = 0
@@ -436,9 +435,13 @@ def _voxelize_geometry(
             unique_for_shape = np.unique(np.column_stack((bx, by, bz)), axis=0)
             for block_xyz in unique_for_shape:
                 coord = (int(block_xyz[0]), int(block_xyz[1]), int(block_xyz[2]))
-                occupied_blocks.setdefault(coord, element_type)
-
-            type_counts[element_type] += int(unique_for_shape.shape[0])
+                existing_type = occupied_blocks.get(coord)
+                if existing_type is None:
+                    occupied_blocks[coord] = element_type
+                else:
+                    occupied_blocks[coord] = _resolve_overlap_ifc_type(
+                        existing_type, element_type, config
+                    )
 
         except Exception:
             shapes_failed += 1
@@ -460,7 +463,7 @@ def _voxelize_geometry(
                 chunk_max_x=None,
                 chunk_min_z=None,
                 chunk_max_z=None,
-                type_counts=type_counts,
+                type_counts=Counter(),
             ),
             block_types_by_coord={},
         )
@@ -476,6 +479,7 @@ def _voxelize_geometry(
     chunk_max_x = math.floor(max_x / 16)
     chunk_min_z = math.floor(min_z / 16)
     chunk_max_z = math.floor(max_z / 16)
+    type_counts = Counter(occupied_blocks.values())
 
     return VoxelizationResult(
         summary=VoxelizationSummary(
@@ -512,6 +516,18 @@ def _resolve_block_name(ifc_type: str, config: ImportConfig) -> str:
     if ifc_type in config.block_map:
         return config.block_map[ifc_type]
     return "minecraft:stone"
+
+
+def _resolve_overlap_ifc_type(
+    existing_ifc_type: str,
+    candidate_ifc_type: str,
+    config: ImportConfig,
+) -> str:
+    existing_priority = int(config.type_priority.get(existing_ifc_type, 0))
+    candidate_priority = int(config.type_priority.get(candidate_ifc_type, 0))
+    if candidate_priority > existing_priority:
+        return candidate_ifc_type
+    return existing_ifc_type
 
 
 def _write_blocks_to_world(
@@ -623,6 +639,7 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     print(f"include_types: {list(config.include_types)}")
     print(f"exclude_types: {list(config.exclude_types)}")
     print(f"block_map_size: {len(config.block_map)}")
+    print(f"type_priority_size: {len(config.type_priority)}")
     print(f"selected_elements: {len(selected_elements)}")
     print(f"geometry_shapes: {geometry.shape_count}")
     print(f"empty_geometry_shapes: {geometry.empty_shape_count}")

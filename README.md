@@ -12,6 +12,7 @@ IFC to Minecraft importer.
 ```bash
 uv sync
 uv run ifc2mc --help
+uv run pytest
 uv run ifc2mc import --ifc path/to/model.ifc --world path/to/world --dry-run
 uv run ifc2mc import --ifc path/to/model.ifc --world path/to/world --dry-run --voxelize
 uv run ifc2mc import --ifc path/to/model.ifc --world /path/to/existing/minecraft/world
@@ -22,3 +23,4 @@ uv run ifc2mc import --ifc path/to/model.ifc --world /path/to/world --voxelize -
 Notes:
 - Non-`--dry-run` mode writes blocks into an existing world directory using Amulet.
 - If `--voxelize` is omitted in write mode, voxelization is enabled automatically.
+- Overlapping voxel candidates are resolved deterministically using IFC type priority defaults in `ifc2mc/config.py`.
