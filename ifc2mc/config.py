@@ -36,14 +36,30 @@ class ImportConfig:
 
 
 def default_block_map() -> dict[str, str]:
-    """Default IFC class -> Minecraft block mapping."""
+    """Default IFC/material -> Minecraft block mapping."""
 
     return {
+        # Material bucket defaults.
+        "material:wood": "minecraft:oak_planks",
+        "material:metal": "minecraft:iron_block",
+        "material:concrete": "minecraft:smooth_stone",
+        "material:masonry": "minecraft:stone_bricks",
+        "material:glass": "minecraft:glass",
+        "material:soil": "minecraft:dirt",
+        # Type+material overrides for more recognizable silhouettes.
+        "IfcRailing|wood": "minecraft:oak_fence",
+        "IfcRailing|metal": "minecraft:iron_bars",
         "IfcBeam": "minecraft:stone",
         "IfcColumn": "minecraft:stone_bricks",
         "IfcSlab": "minecraft:smooth_stone",
         "IfcFooting": "minecraft:andesite",
         "IfcMember": "minecraft:polished_andesite",
+        "IfcWall": "minecraft:stone_bricks",
+        "IfcEarthworksFill": "minecraft:dirt",
+        "IfcBuildingElementProxy": "minecraft:stone",
+        "IfcBridgePart": "minecraft:stone_bricks",
+        "IfcElementAssembly": "minecraft:stone_bricks",
+        "IfcSign": "minecraft:stone",
     }
 
 

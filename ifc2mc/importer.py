@@ -5,12 +5,13 @@ import multiprocessing
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import ifcopenshell
 import ifcopenshell.geom
+import ifcopenshell.util.element
 import ifcopenshell.util.unit
 import numpy as np
 import trimesh
@@ -68,6 +69,9 @@ class VoxelizationSummary:
 class VoxelizationResult:
     summary: VoxelizationSummary
     block_types_by_coord: dict[tuple[int, int, int], str]
+    material_buckets_by_coord: dict[tuple[int, int, int], str] = field(
+        default_factory=dict
+    )
 
 
 def _fmt_vec3(values: tuple[float, float, float], ndigits: int = 3) -> str:
@@ -98,6 +102,98 @@ def _print_timing_summary(
     if write_ms is not None:
         print(f"  write_world: {_fmt_ms(write_ms)}")
     print(f"  total: {_fmt_ms(total_ms)}")
+
+
+_MATERIAL_BUCKET_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "wood",
+        (
+            "wood",
+            "timber",
+            "lumber",
+            "hout",
+            "hardhout",
+            "multiplex",
+            "plywood",
+            "oak",
+            "pine",
+            "spruce",
+        ),
+    ),
+    (
+        "metal",
+        (
+            "steel",
+            "staal",
+            "metal",
+            "aluminium",
+            "aluminum",
+            "copper",
+            "zinc",
+            "iron",
+            "bronze",
+        ),
+    ),
+    ("concrete", ("concrete", "beton", "cement")),
+    (
+        "masonry",
+        ("masonry", "brick", "baksteen", "stone", "granite", "natuursteen", "kalkzandsteen"),
+    ),
+    ("glass", ("glass", "glas", "glazing")),
+    (
+        "soil",
+        (
+            "soil",
+            "earth",
+            "dirt",
+            "gravel",
+            "sand",
+            "asphalt",
+            "bulk-material",
+            "fill",
+        ),
+    ),
+)
+_MATERIAL_BUCKET_ORDER = {
+    bucket: index for index, (bucket, _) in enumerate(_MATERIAL_BUCKET_KEYWORDS)
+}
+
+
+def _extract_material_names(element: Any) -> tuple[str, ...]:
+    try:
+        materials = ifcopenshell.util.element.get_materials(element)
+    except Exception:
+        return ()
+
+    unique_names: list[str] = []
+    seen: set[str] = set()
+    for material in materials:
+        name = str(getattr(material, "Name", "") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        unique_names.append(name)
+    return tuple(unique_names)
+
+
+def _infer_material_bucket(material_names: tuple[str, ...]) -> str | None:
+    if not material_names:
+        return None
+
+    bucket_scores: Counter[str] = Counter()
+    for material_name in material_names:
+        name_lc = material_name.lower()
+        for bucket, keywords in _MATERIAL_BUCKET_KEYWORDS:
+            if any(keyword in name_lc for keyword in keywords):
+                bucket_scores[bucket] += 1
+
+    if not bucket_scores:
+        return None
+
+    return max(
+        bucket_scores.items(),
+        key=lambda item: (item[1], -_MATERIAL_BUCKET_ORDER[item[0]]),
+    )[0]
 
 
 def _ifc_points_to_mc(points_ifc_m: np.ndarray, yaw_degrees: float) -> np.ndarray:
@@ -391,6 +487,7 @@ def _voxelize_geometry(
         )
 
     occupied_blocks: dict[tuple[int, int, int], str] = {}
+    occupied_material_buckets: dict[tuple[int, int, int], str] = {}
 
     shapes_with_faces = 0
     shapes_voxelized = 0
@@ -439,8 +536,12 @@ def _voxelize_geometry(
             try:
                 element = ifc_file.by_id(int(shape.id))
                 element_type = str(element.is_a())
+                element_material_bucket = _infer_material_bucket(
+                    _extract_material_names(element)
+                )
             except Exception:
                 element_type = "<unknown>"
+                element_material_bucket = None
 
             bx = np.floor(
                 (points_mc_m[:, 0] + transform.shift_x_m) / config.meters_per_block
@@ -461,10 +562,20 @@ def _voxelize_geometry(
                 existing_type = occupied_blocks.get(coord)
                 if existing_type is None:
                     occupied_blocks[coord] = element_type
+                    if element_material_bucket is not None:
+                        occupied_material_buckets[coord] = element_material_bucket
+                    else:
+                        occupied_material_buckets.pop(coord, None)
                 else:
-                    occupied_blocks[coord] = _resolve_overlap_ifc_type(
+                    winning_type = _resolve_overlap_ifc_type(
                         existing_type, element_type, config
                     )
+                    if winning_type != existing_type:
+                        occupied_blocks[coord] = winning_type
+                        if element_material_bucket is not None:
+                            occupied_material_buckets[coord] = element_material_bucket
+                        else:
+                            occupied_material_buckets.pop(coord, None)
 
         except Exception:
             shapes_failed += 1
@@ -520,6 +631,7 @@ def _voxelize_geometry(
             type_counts=type_counts,
         ),
         block_types_by_coord=occupied_blocks,
+        material_buckets_by_coord=occupied_material_buckets,
     )
 
 
@@ -535,7 +647,18 @@ def _parse_block_name(block_name: str) -> tuple[str, str]:
     return ("minecraft", raw)
 
 
-def _resolve_block_name(ifc_type: str, config: ImportConfig) -> str:
+def _resolve_block_name(
+    ifc_type: str,
+    material_bucket: str | None,
+    config: ImportConfig,
+) -> str:
+    if material_bucket is not None:
+        typed_material_key = f"{ifc_type}|{material_bucket}"
+        if typed_material_key in config.block_map:
+            return config.block_map[typed_material_key]
+        material_key = f"material:{material_bucket}"
+        if material_key in config.block_map:
+            return config.block_map[material_key]
     if ifc_type in config.block_map:
         return config.block_map[ifc_type]
     return "minecraft:stone"
@@ -570,6 +693,7 @@ def _count_touched_chunks(block_types_by_coord: dict[tuple[int, int, int], str])
 def _write_blocks_to_world(
     config: ImportConfig,
     block_types_by_coord: dict[tuple[int, int, int], str],
+    material_buckets_by_coord: dict[tuple[int, int, int], str],
 ) -> tuple[int, Counter[str], int]:
     import amulet
     from amulet.api.block import Block
@@ -594,7 +718,8 @@ def _write_blocks_to_world(
 
     try:
         for (x, y, z), ifc_type in sorted_items:
-            block_name = _resolve_block_name(ifc_type, config)
+            material_bucket = material_buckets_by_coord.get((x, y, z))
+            block_name = _resolve_block_name(ifc_type, material_bucket, config)
             block = block_cache.get(block_name)
             if block is None:
                 namespace, base_name = _parse_block_name(block_name)
@@ -812,6 +937,25 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
             print("  top_voxelized_types:")
             for type_name, count in voxel_summary.type_counts.most_common(10):
                 print(f"    {type_name}: {count}")
+            block_preview_counts: Counter[str] = Counter()
+            material_bucket_counts = Counter(
+                voxel_result.material_buckets_by_coord.values()
+            )
+            for coord, ifc_type in voxel_result.block_types_by_coord.items():
+                block_preview_counts[
+                    _resolve_block_name(
+                        ifc_type,
+                        voxel_result.material_buckets_by_coord.get(coord),
+                        config,
+                    )
+                ] += 1
+            if material_bucket_counts:
+                print("  top_material_buckets:")
+                for bucket_name, count in material_bucket_counts.most_common(10):
+                    print(f"    {bucket_name}: {count}")
+            print("  top_resolved_blocks:")
+            for block_name, count in block_preview_counts.most_common(10):
+                print(f"    {block_name}: {count}")
         except Exception as exc:
             print(f"error: voxelization failed: {exc}", file=sys.stderr)
             return 1
@@ -850,7 +994,9 @@ def run_import(config: ImportConfig, *, dry_run: bool = False) -> int:
     write_started_at = time.perf_counter()
     try:
         placed_count, placed_by_block_name, touched_chunks = _write_blocks_to_world(
-            config, voxel_result.block_types_by_coord
+            config,
+            voxel_result.block_types_by_coord,
+            voxel_result.material_buckets_by_coord,
         )
     except Exception as exc:
         print(f"error: failed to write world blocks: {exc}", file=sys.stderr)

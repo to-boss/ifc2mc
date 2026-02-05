@@ -14,6 +14,7 @@ from ifc2mc.importer import (
     _count_touched_chunks,
     _compute_placement_transform,
     _fmt_ms,
+    _infer_material_bucket,
     _ifc_points_to_mc,
     _parse_block_name,
     _plan_block_placement,
@@ -136,9 +137,29 @@ def test_parse_block_name_variants() -> None:
 
 
 def test_resolve_block_name_prefers_config_map() -> None:
-    cfg = _base_config(block_map={"IfcColumn": "minecraft:stone_bricks"})
-    assert _resolve_block_name("IfcColumn", cfg) == "minecraft:stone_bricks"
-    assert _resolve_block_name("IfcWall", cfg) == "minecraft:stone"
+    cfg = _base_config(
+        block_map={
+            "material:wood": "minecraft:oak_planks",
+            "IfcRailing|wood": "minecraft:oak_fence",
+            "IfcColumn": "minecraft:stone_bricks",
+        }
+    )
+    assert (
+        _resolve_block_name("IfcRailing", "wood", cfg)
+        == "minecraft:oak_fence"
+    )
+    assert _resolve_block_name("IfcBeam", "wood", cfg) == "minecraft:oak_planks"
+    assert _resolve_block_name("IfcColumn", None, cfg) == "minecraft:stone_bricks"
+    assert _resolve_block_name("IfcWall", None, cfg) == "minecraft:stone"
+
+
+def test_infer_material_bucket_from_common_names() -> None:
+    assert _infer_material_bucket(("wood-generic",)) == "wood"
+    assert _infer_material_bucket(("05 Staal - RAL 7016",)) == "metal"
+    assert _infer_material_bucket(("concrete_reinforced_in-situ",)) == "concrete"
+    assert _infer_material_bucket(("stone_granite_masonry",)) == "masonry"
+    assert _infer_material_bucket(("bulk-material_soil_generic",)) == "soil"
+    assert _infer_material_bucket(("virtual_black",)) is None
 
 
 def test_resolve_overlap_ifc_type_uses_priority_and_stable_ties() -> None:
@@ -296,7 +317,7 @@ def test_run_import_write_mode_prints_voxelize_and_write_timing(
     )
     monkeypatch.setattr(
         "ifc2mc.importer._write_blocks_to_world",
-        lambda _cfg, _blocks: (1, Counter({"minecraft:stone": 1}), 1),
+        lambda _cfg, _blocks, _materials: (1, Counter({"minecraft:stone": 1}), 1),
     )
 
     rc = run_import(
