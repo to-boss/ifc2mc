@@ -191,11 +191,53 @@ def test_connection_properties_for_fence_blocks() -> None:
     }
     props = _connection_properties_for_block("minecraft:oak_fence", (0, 10, 0), resolved)
     assert props == {
-        "north": True,
-        "east": True,
-        "south": False,
-        "west": False,
-        "waterlogged": False,
+        "north": "true",
+        "east": "true",
+        "south": "false",
+        "west": "false",
+        "waterlogged": "false",
+    }
+
+
+def test_connection_properties_for_wall_blocks_straight_line() -> None:
+    resolved = {
+        (0, 10, 0): "minecraft:stone_brick_wall",
+        (0, 10, -1): "minecraft:stone_brick_wall",
+        (0, 10, 1): "minecraft:stone_brick_wall",
+    }
+    props = _connection_properties_for_block(
+        "minecraft:stone_brick_wall",
+        (0, 10, 0),
+        resolved,
+    )
+    assert props == {
+        "north": "low",
+        "east": "none",
+        "south": "low",
+        "west": "none",
+        "up": "false",
+        "waterlogged": "false",
+    }
+
+
+def test_connection_properties_for_wall_blocks_corner_has_up_post() -> None:
+    resolved = {
+        (0, 10, 0): "minecraft:stone_brick_wall",
+        (0, 10, -1): "minecraft:stone_brick_wall",
+        (1, 10, 0): "minecraft:stone_brick_wall",
+    }
+    props = _connection_properties_for_block(
+        "minecraft:stone_brick_wall",
+        (0, 10, 0),
+        resolved,
+    )
+    assert props == {
+        "north": "low",
+        "east": "low",
+        "south": "none",
+        "west": "none",
+        "up": "true",
+        "waterlogged": "false",
     }
 
 

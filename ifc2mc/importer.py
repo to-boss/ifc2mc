@@ -659,26 +659,47 @@ def _connection_properties_for_block(
     block_name: str,
     coord: tuple[int, int, int],
     resolved_block_names: dict[tuple[int, int, int], str],
-) -> dict[str, bool] | None:
+) -> dict[str, str] | None:
     namespace, base_name = _parse_block_name(block_name)
     if namespace != "minecraft":
         return None
 
-    supports_connections = (
+    supports_fence_like_connections = (
         base_name.endswith("_fence")
         or base_name == "iron_bars"
         or base_name.endswith("_glass_pane")
     )
-    if not supports_connections:
+    supports_wall_connections = base_name.endswith("_wall")
+    if not supports_fence_like_connections and not supports_wall_connections:
         return None
 
     x, y, z = coord
-    properties: dict[str, bool] = {}
+    neighbor_connected: dict[str, bool] = {}
     for direction_name, (delta_x, delta_z) in _HORIZONTAL_DIRECTIONS:
-        properties[direction_name] = (
+        neighbor_connected[direction_name] = (
             (x + delta_x, y, z + delta_z) in resolved_block_names
         )
-    properties["waterlogged"] = False
+
+    properties: dict[str, str] = {}
+    if supports_wall_connections:
+        for direction_name, is_connected in neighbor_connected.items():
+            properties[direction_name] = "low" if is_connected else "none"
+
+        connected_directions = {
+            direction_name
+            for direction_name, is_connected in neighbor_connected.items()
+            if is_connected
+        }
+        is_straight_line = connected_directions in (
+            {"north", "south"},
+            {"east", "west"},
+        )
+        properties["up"] = "false" if is_straight_line else "true"
+    else:
+        for direction_name, is_connected in neighbor_connected.items():
+            properties[direction_name] = "true" if is_connected else "false"
+
+    properties["waterlogged"] = "false"
     return properties
 
 
@@ -739,7 +760,7 @@ def _write_blocks_to_world(
     placed_by_block_name: Counter[str] = Counter()
     block_cache: dict[str, Block] = {}
     connected_block_cache: dict[
-        tuple[str, tuple[tuple[str, bool], ...]],
+        tuple[str, tuple[tuple[str, str], ...]],
         Block,
     ] = {}
     touched_chunks: set[tuple[int, int]] = set()
@@ -786,7 +807,7 @@ def _write_blocks_to_world(
                 if block is None:
                     namespace, base_name = _parse_block_name(block_name)
                     properties_nbt = {
-                        key: StringTag("true" if value else "false")
+                        key: StringTag(value)
                         for key, value in connection_key
                     }
                     block = Block(namespace, base_name, properties_nbt)
