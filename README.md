@@ -2,6 +2,9 @@
 
 Import IFC models into Minecraft Java Edition worlds.
 
+![IFC bridge model imported into Minecraft](docs/example-bridge.png)
+*IFC bridge model (Infra-Bridge.ifc) imported into a Minecraft world.*
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/) for dependency management
