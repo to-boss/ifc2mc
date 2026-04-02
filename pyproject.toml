@@ -3,7 +3,7 @@ name = "ifc2mc"
 version = "0.1.0"
 description = "IFC to Minecraft importer"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "amulet-core>=1.9.35",
     "ifcopenshell>=0.8.4.post1",
@@ -12,6 +12,9 @@ dependencies = [
 
 [project.scripts]
 ifc2mc = "ifc2mc.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ifc2mc*"]
 
 [tool.uv]
 package = true
